@@ -1,0 +1,292 @@
+---
+title: "Exploration of Pittsburgh Arrest and Allegheny County Jail Data"
+author: "Devraj Kori"
+date: "5/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(XML)
+library(rjson)
+library(httr)
+library(stringr)
+library(rvest)
+library(ggplot2)
+library(tidycensus)
+library(sf)
+library(leaflet)
+library(waffle)
+library(gridExtra)
+load("arrest and jail data.Rdata")
+```
+
+```{r pull_census,include=FALSE}
+vars<-load_variables(2018,"acs5")
+race<-vars%>%
+  filter(grepl("B01001",name, ignore.case=TRUE))
+poverty<-vars%>%
+  filter(grepl("poverty",concept,ignore.case=TRUE))
+income<-vars%>%
+  filter(grepl("income",concept,ignore.case=TRUE))
+#define columns to be retrieved from normal ACS
+to_retrieve<-c("total_pop" = "B01001_001",
+               "black_pop" = "B01001B_001",
+               "total_pop2" = "B17001_001",
+               "poverty_pop" = "B17001_002",
+               "under_5" = "B01001_003")
+#define columsn to be retrieved from ACS survey
+# define variables to retrieve from acs profile datasets
+to_retrieve_profile<-c(
+  # percentage of families in poverty
+  "family_poverty_pct" = "DP03_0119P",
+  # percentage of individuals in poverty
+  "all_poverty_pct" = "DP03_0128P")
+
+#read in pittsburgh boundaries
+pitt_boundary<-st_read(GET("http://pghgis-pittsburghpa.opendata.arcgis.com/datasets/a99f25fffb7b41c8a4adf9ea676a3a0b_0.geojson"))%>%
+  st_transform(crs="+init=epsg:2163")
+
+#pull census data for race
+census_data<-get_acs(geography="tract",variables=to_retrieve,year=2018,
+                     state="PA",
+                     county="Allegheny",
+                     geometry=TRUE)%>%
+  select(-moe)%>%
+  spread(key=variable,value=estimate)%>%
+  inner_join(get_acs(geography="tract",variables=to_retrieve_profile,year=2018,state="PA",county="Allegheny")%>%
+               select(-moe)%>%
+               spread(key=variable,value=estimate))%>%
+  mutate(percent_black=black_pop/total_pop)%>%
+  st_transform(crs="+init=epsg:2163")%>%
+  st_join(pitt_boundary,st_intersects,left=FALSE)%>%
+  #change the crs
+  st_transform(crs="+init=epsg:4326")
+
+
+
+```
+## Mapping allegheny county arrest patterns against area black population
+In the map below, the circle markers indicate the approximate locations of arrests in Pittsburgh since the start of 2019, and the area shading shows the share of the area population that is black/African-American. Arrests for non-violent offenses tend to be concentrated in areas of Pittsburgh with large black populations including the Hill District, East Liberty, and Homewood. 
+```{r arrest_map,echo=FALSE}
+#modify the violent flag in the arrest data to be more informative
+arrest_data_for_map<-arrest_data%>%
+  mutate(violent_text=case_when(VIOLENT==TRUE~"Violent Offense",
+                                VIOLENT==FALSE~"Non-violent Offense"))%>%
+  
+  filter(as.numeric(paste0(format(ARRESTTIME,"%Y")))>=2019)
+
+#create a palette for census_data
+pal<-colorNumeric(palette="viridis",domain=c(0,1))
+pal2<-colorFactor(palette="RdBu",domain=unique(arrest_data_for_map$violent_text))
+
+leaflet()%>%
+  setView(lng=-79.9968097,lat=40.4452254,zoom=12.5)%>%
+  addProviderTiles("CartoDB.Positron")%>%
+  addPolygons(data=census_data%>%filter(!is.na(percent_black)),
+              color=~pal(percent_black),
+              stroke=FALSE
+              )%>%
+  addLegend(position="bottomright",
+            pal=pal,
+            values=range(0,1),
+            title="Black share of</br>area population")%>%
+  addCircleMarkers(data=arrest_data_for_map%>%
+                     filter(!is.na(X))%>%
+                     st_as_sf(coords=c("X","Y")),
+                   color=~pal2(violent_text),
+                   radius=5,
+                   fillOpacity=.15,
+                   stroke=FALSE,
+                   popup = ~OFFENSES)%>%
+  addLegend(position="topright",
+            pal=pal2,
+            values=unique(arrest_data_for_map$violent_text),
+            title="Arrest offenses include</br>violent crime?")
+
+
+```
+
+
+## Racial disparities in non-violent youth arrests
+The markers below show the arrests of individuals who were 21 or younger at the time of arrest for non-violent offenses since the start of 2019 ,color-coded by race. Black youths are funneled into the criminal justice system for minor offenses, reducing the legal opportunities available to them for the rest of their lives and perpetuating cycles of poverty.
+```{r arrests_map_youths,echo=FALSE}
+youth_arrests<-arrest_data%>%
+  filter(VIOLENT==FALSE)%>%
+  filter(AGE<21)%>%
+  mutate(race_text=case_when(RACE=="B"~"Black",
+                             RACE=="W"~"White",
+                             TRUE~"Other"))%>%
+  filter(as.numeric(paste0(format(ARRESTTIME,"%Y")))>=2019)
+
+#create a palette for census_data
+pal<-colorNumeric(palette="inferno",domain=c(0,1))
+#pal3<-colorFactor(palette=palette(c("green","blue","red")),domain=unique(youth_arrests$race_text))
+pal3<-colorFactor(palette="Dark2",domain=unique(youth_arrests$race_text))
+
+#create map
+leaflet()%>%
+  setView(lng=-79.9968097,lat=40.4452254,zoom=12)%>%
+  addProviderTiles("CartoDB.DarkMatter")%>%
+  # addPolygons(data=census_data%>%filter(!is.na(all_poverty_pct)),
+  #             color=~pal(family_poverty_pct),
+  #             stroke=FALSE
+  #             )%>%
+  # addLegend(position="bottomright",
+  #           pal=pal,
+  #           values=range(0,1),
+  #           title="Area poverty rate")%>%
+  addCircleMarkers(data=youth_arrests%>%
+                     filter(!is.na(X))%>%
+                     st_as_sf(coords=c("X","Y")),
+                   color=~pal3(race_text),
+                   radius=6,
+                   fillOpacity=.2,
+                   stroke=FALSE,
+                   popup = ~OFFENSES)%>%
+  addLegend(position="topright",
+            pal=pal3,
+            values=unique(youth_arrests$race_text),
+            title="Race of arrested</br>youths (under 21)")
+```
+## Violent share of arrests by race
+The share of arrests for violent offenses are comparable for black and white individuals in Pittsburgh. (expand interpretation or remove)
+
+```{r race_violent_waffle,echo=FALSE}
+white_violent<-arrest_data%>%
+  as.data.frame()%>%
+  dplyr::filter(RACE=="W")%>%
+  mutate(violent_text=case_when(VIOLENT~"includes violent offense",
+                                !VIOLENT~"non-violent offense(s)"))%>%
+  group_by(violent_text)%>%
+  summarise(count=n())
+
+for_white_waffle<-white_violent$count
+names(for_white_waffle)<-paste(white_violent$violent_text)
+
+black_violent<-arrest_data%>%
+  as.data.frame()%>%
+  dplyr::filter(RACE=="B")%>%
+  mutate(violent_text=case_when(VIOLENT==TRUE~"includes violent offense",
+                                VIOLENT==FALSE~"non-violent offense(s)"))%>%
+  group_by(violent_text)%>%
+  summarise(count=n())
+
+for_black_waffle<-black_violent$count
+names(for_black_waffle)<-paste(black_violent$violent_text)
+
+
+white_waffle<-waffle(for_white_waffle/100,rows=20,
+                     colors=c("green","blue"),
+                     title="Arrests of white\nindividuals",
+                     xlab="1sq = 100 arrests")+
+  theme(legend.position="bottom")
+black_waffle<-waffle(for_black_waffle/100,rows=20,
+                     colors=c("green","blue"),
+                     title="Arrests of black\nindividuals",
+                     xlab="1sq = 100 arrests")+
+  theme(legend.position="bottom")
+grid.arrange(white_waffle,black_waffle,ncol=2)
+```
+
+## Jail population over time by race
+The racial breakdown of the population of Allegheny County Jail has remained fairly constant over time. Black individuals make up less than 15% of Allegheny County's population, but make up over 50% of the jail population.
+```{r prison_timeline, echo=FALSE}
+
+jail_data%>%
+  #recode Race
+  # mutate(Race=case_when(Race=="A"~"Asian",
+  #                       Race=="B"~"Black",
+  #                       Race=="H"~"Hispanic",
+  #                       Race=="I"~"Native American",
+  #                       Race=="U"~"Unknown",
+  #                       Race=="W"~"White",
+  #                       Race=="T"~"Two or More"))%>%
+  mutate(Race=case_when(Race=="B"~"Black",
+                        Race=="W"~"White",
+                        Race=="H"~"Hispanic",
+                        TRUE~"Other or Unknown"))%>%
+  filter(!is.na(Race))%>%
+  group_by(Date,Race)%>%
+  summarise(inmates=n())%>%
+  ungroup()%>%
+  ggplot(aes(x=Date,y=inmates,fill=Race))+
+  geom_bar(alpha=.8,position="stack",stat="identity")+
+  theme_minimal()+
+  labs(x="Date",y="Inmates",fill="", title="Allegheny County Jail Daily Population by Race")+
+  scale_fill_viridis_d()+
+  theme(legend.position="bottom")+
+  scale_x_date()
+```
+
+## Average estimated length of stay (years) by race for Allegheny County Jail inmates. 
+
+```{r jail_length_of_stay, echo=FALSE}
+jail_data%>%
+  mutate(length_of_stay=`Current Age` - `Age at Booking`)%>%
+  mutate(Race=case_when(Race=="B"~"Black",
+                        Race=="W"~"White",
+                        # Race=="H"~"Hispanic",
+                        TRUE~"Other or Unknown"))%>%
+  group_by(Date,Race)%>%
+  summarise(length_of_stay=mean(length_of_stay,na.rm=TRUE))%>%
+  ungroup()%>%
+  ggplot(aes(x=Date,y=length_of_stay,fill=Race))+
+  geom_bar(alpha=.8,position="stack",stat="identity")+
+  theme_minimal()+
+  labs(x="Date",y="Estimated length of stay (years)",fill="", title="Allegheny County Jail Daily Population by Race")+
+  scale_fill_viridis_d()+
+  theme(legend.position="bottom")+
+  scale_x_date()
+
+```
+
+## Distribution of ages of inmates of Allegheny County Jail. 
+
+The modal black inmate is in their early to to mid 20s, and black inmates tend to be a few years younger than their white counterparts across the distribution. 
+```{r age_distribution_race,echo=FALSE}
+# #find max date
+# last_date<-max(jail_data$Date)
+# #create subset dataset that's just the last day
+# jail_last_day<-jail_data%>%
+#   filter(Date==last_date)
+#find means of
+median_white_age<-jail_data%>%
+  filter(!is.na(`Current Age`))%>%
+  filter(`Current Age`>0)%>%
+  filter(Race=="W")%>%
+  select(`Current Age`)%>%
+  unlist()%>%
+  median(na.rm=TRUE)
+
+median_black_age<-jail_data%>%
+  filter(!is.na(`Current Age`))%>%
+  filter(`Current Age`>0)%>%
+  filter(Race=="B")%>%
+  select(`Current Age`)%>%
+  unlist()%>%
+  median(na.rm=TRUE)
+jail_data%>%
+  #limit to last day
+  #filter(Date==last_date)%>%
+  filter(!is.na(`Current Age`))%>%
+  filter(`Current Age`>0)%>%
+  mutate(Race=case_when(Race=="B"~"Black",
+                        Race=="W"~"White",
+                        # Race=="H"~"Hispanic",
+                        TRUE~"Other or Unknown"))%>%
+  filter(Race%in%c("Black","White"))%>%
+  #plot density chart
+  ggplot()+
+  geom_density(aes(x=`Current Age`,fill=Race),alpha=.3)+
+  labs(x="Age of Inmate",y="Percentage of Inmates\nof Given Race",title="Age Distribution of Allegheny County Jail Inmates by Race\n
+       June 2016 - June 2019",fill="")+
+  theme_minimal()+
+  theme(legend.position="bottom")+
+  geom_vline(xintercept=median_black_age,color="red",linetype="dashed",alpha=.5)+
+  geom_vline(xintercept=median_white_age,color="blue",linetype="dashed",alpha=.5)
+
+```
+
