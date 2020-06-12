@@ -20,6 +20,7 @@ library(sf)
 library(leaflet)
 library(waffle)
 library(gridExtra)
+library(scales)
 load("arrest and jail data.Rdata")
 ```
 
@@ -68,7 +69,7 @@ census_data<-get_acs(geography="tract",variables=to_retrieve,year=2018,
 
 
 ```
-## Mapping allegheny county arrest patterns against area black population
+## Mapping Pittsburgh arrest patterns against area black population
 In the map below, the circle markers indicate the approximate locations of arrests in Pittsburgh since the start of 2019, and the area shading shows the share of the area population that is black/African-American. Arrests for non-violent offenses tend to be concentrated in areas of Pittsburgh with large black populations including the Hill District, East Liberty, and Homewood. 
 ```{r arrest_map,echo=FALSE}
 #modify the violent flag in the arrest data to be more informative
@@ -79,7 +80,7 @@ arrest_data_for_map<-arrest_data%>%
   filter(as.numeric(paste0(format(ARRESTTIME,"%Y")))>=2019)
 
 #create a palette for census_data
-pal<-colorNumeric(palette="viridis",domain=c(0,1))
+pal<-colorNumeric(palette="viridis",census_data$percent_black)
 pal2<-colorFactor(palette="RdBu",domain=unique(arrest_data_for_map$violent_text))
 
 leaflet()%>%
@@ -91,8 +92,9 @@ leaflet()%>%
               )%>%
   addLegend(position="bottomright",
             pal=pal,
-            values=range(0,1),
-            title="Black share of</br>area population")%>%
+            values=census_data[!is.na(census_data$percent_black),]$percent_black,
+            title="Black share of</br>area population",
+            labFormat=labelFormat(suffix="%",transform=function(x) 100*x))%>%
   addCircleMarkers(data=arrest_data_for_map%>%
                      filter(!is.na(X))%>%
                      st_as_sf(coords=c("X","Y")),
@@ -151,6 +153,7 @@ leaflet()%>%
             values=unique(youth_arrests$race_text),
             title="Race of arrested</br>youths (under 21)")
 ```
+
 ## Violent share of arrests by race
 The share of arrests for violent offenses are comparable for black and white individuals in Pittsburgh. (expand interpretation or remove)
 
